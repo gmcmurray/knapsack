@@ -1,0 +1,545 @@
+/*
+Knapsack solver using binary tree search.
+BFS and DFS are used with a lower bound > upper bound
+scheme to trim the search.  The lower bound
+is a feasible solution and is updated (increased) in 
+the search once a higher lower bound is found.
+upper bound is not feasible, but is relatively tight.
+It is guaranteed that upper bound >= optimal solution
+at the root.  At each node in the tree, upper bound
+is updated with remaining capacity and cumulated value.
+In the case that lower bound > upper bound you can
+skip this node and prune the tree.
+BFS was OK upto 19 items, while DFS was the
+winner with less than 1 sec execution time for 
+upto 10000 items tried.
+
+A dynamic program solution was also attemped but 
+was not able to get same execution as DFS.
+George - 1/27/24
+*/
+
+#include <iostream>
+#include <chrono>
+#include <vector>
+#include <algorithm>
+#include <fstream>
+#include <unordered_map>   // hash table for DFS, explored
+#include <tuple>
+#include <queue>           // used in BFS 
+#include <stack>           // used in DFS
+ 
+using namespace std;
+// Define a custom struct node
+struct Node1 {
+    //int data;
+    int cumWeight;      // cumulative weight in pack
+    int cumVal;         // cumaltive value in pack
+    int itemId;         // item id 
+    int level;          // level or rank of item in value density sorted list
+    Node1* left = 0;    //  left child - take item
+    Node1* right = 0;   //  right child - don't take item
+    Node1* parent = 0;  // parent node
+    Node1(int remainCap, int cumVal, int id, Node1* parent, int level)
+        : cumWeight(remainCap), cumVal(cumVal),
+        itemId(id), parent(parent), level(level)
+    {
+    }
+};
+
+// Hash function for the custom struct Node1* using the address
+struct NodePtrHash {
+    std::size_t operator()(const Node1* n) const {
+        // Use the address of the node as the hash value
+        return std::hash<const Node1*>()(n);
+    }
+};
+
+// Equality function for the custom struct Node1* using the address
+struct NodePtrEqual {
+    bool operator()(const Node1* lhs, const Node1* rhs) const {
+        // Compare nodes based on their addresses
+        return lhs == rhs;
+    }
+};
+
+struct item    // item considered to go in packpack
+{
+    int id;
+    int value;
+    int weight;
+    float valdensity;
+};
+
+
+// Predicate used for sorting of items based on value density
+bool sortValDensity(item& dat1, item& dat2)
+{
+    return (dat2.valdensity < dat1.valdensity);
+}
+
+// Provides Upper bound, not feasible, of Value to Go, assumes items are continous
+// Greedy approach, where last item checked before capacity expires is assumed
+// to be continuos, all capacity is used
+float ContValueToGo(const vector<item>& sortedList, const int& valueToGo, const int& remainCap,
+    const int& level)
+{
+    int temp = remainCap;
+    float result = (float)valueToGo;
+    vector<item>::const_iterator itemItr = sortedList.begin() + level;
+    for (; itemItr != sortedList.end(); itemItr++)
+    {
+        if (temp >= (*itemItr).weight)
+        {
+            result += (*itemItr).value;
+            temp -= (*itemItr).weight;
+        }
+        else
+        {
+            result += ((float)temp / (float)(*itemItr).weight) * (*itemItr).value;
+            temp = 0;
+            break;
+        }
+    }
+    return result;
+}
+
+// Best feasible solution using greedy approach, take all items in order
+// of the value density list with capacity constraint - not necessarily optimal
+int BestValueToGo(const vector<item>& sortedList, const int& valueToGo, const int& remainCap
+    , const int& level, vector<int> &grabbed)
+{
+    int temp = remainCap;
+    int result = valueToGo;
+    vector<item>::const_iterator itemItr = sortedList.begin() + level;
+    for (; itemItr != sortedList.end(); itemItr++)
+    {
+        if (temp >= (*itemItr).weight)
+        {
+            result += (*itemItr).value;
+            temp -= (*itemItr).weight;
+            grabbed.push_back((*itemItr).id);
+        }
+    }
+    return result;
+}
+// Overload function without the grabbed list of items
+int BestValueToGo(const vector<item>& sortedList, const int& valueToGo, const int& remainCap
+    , const int& level)
+{
+    int temp = remainCap;
+    int result = valueToGo;
+    vector<item>::const_iterator itemItr = sortedList.begin() + level;
+    for (; itemItr != sortedList.end(); itemItr++)
+    {
+        if (temp >= (*itemItr).weight)
+        {
+            result += (*itemItr).value;
+            temp -= (*itemItr).weight;
+        }
+    }
+    return result;
+}
+
+
+// Breadth Search First search of binary tree. Uses queue
+vector<tuple<int, Node1*, bool, int, int>> 
+BFSiterative(const vector<item>& items, Node1* root,
+    std::unordered_map<Node1*, tuple<Node1*, int, int>, NodePtrHash, NodePtrEqual>& BinTree,
+    const int & Capacity)  
+{
+    vector<tuple<int, Node1*, bool, int, int>> bottom;
+    queue<Node1*> q;
+    int level = 0, Val = 0;
+    int lowerBd = BestValueToGo(items, 0, Capacity, 0);
+    float upperBd = ContValueToGo(items, 0,Capacity,0);
+    Node1* temp = root;
+    Node1 dummy(0,0,-1,0,0);
+    q.push(temp);
+    int cumWei = 0, cumVal = 0, count = 0, multi = 1, remainCap = Capacity;
+    int skipped = 0;
+    while (!q.empty() && level < items.size() - 1)
+    {
+        if (q.front()->left == 0 && q.front()->left != &dummy)
+        {
+            
+            cumWei = temp->cumWeight + items[level].weight;
+            cumVal = temp->cumVal + items[level].value;
+            int remainingCap = Capacity - cumWei;
+            if (remainingCap > 0)
+            {
+                float bestToGo = ContValueToGo(items, cumVal, remainingCap, level + 1);
+                if (bestToGo >= lowerBd)
+                {
+                    Node1* lchild = new Node1(cumWei, cumVal, items[level + 1].id, temp,level+1);
+                    temp->left = lchild;
+                    q.push(lchild);
+                }
+                else
+                {
+                    skipped++;
+                    temp->left = &dummy;
+                } 
+            }
+        }
+        if (q.front()->right == 0 && q.front()->right != &dummy)
+        {
+            float bestToGo = ContValueToGo(items, cumVal, Capacity - temp->cumVal, level + 1);
+            if (bestToGo > lowerBd)
+            {
+                Node1* rchild = new Node1(temp->cumWeight, temp->cumVal, items[level + 1].id, temp,level+1);
+                temp->right = rchild;
+                q.push(rchild);
+            }
+            else
+            {
+                skipped++;
+                temp->right = &dummy;
+            }
+        }
+        if ((q.front()->right != 0) && (q.front()->left != 0))
+        {
+            BinTree.insert({ q.front(),make_tuple(temp,
+                items[level].value,items[level].id) });
+        }
+        count++;
+        q.pop();
+        if (!q.empty())
+            temp = q.front();
+        if (count >= multi)
+        {
+            multi *= 2;
+            level++;
+            count = 0;
+        }
+    }
+    while (!q.empty())  // Create leaves of final solution - no children - queue still nonempty
+    {
+        BinTree.insert({ q.front(),make_tuple(temp,
+                items[level].value,items[level].id) });
+
+        if (Capacity > q.front()->cumWeight + items[level].weight)
+        {
+            bottom.emplace_back(q.front()->itemId,
+                q.front(),
+                true,
+                items[level].weight + q.front()->cumWeight,
+                items[level].value + q.front()->cumVal);
+        }
+        else  // Not enough capacity
+        {
+            bottom.emplace_back(q.front()->itemId,
+                q.front(),
+                false,
+                q.front()->cumWeight,
+                q.front()->cumVal);
+        }
+        q.pop();
+        if (!q.empty())
+            temp = q.front();
+    }
+    return bottom;
+}
+
+// find path by back track from bestLeaf upto root.
+// taken is whether the leaf node was taken (left child) 
+vector<int> backTrack(Node1* bestLeaf, bool taken)
+{
+    vector<int> path;
+    Node1* temp = bestLeaf;
+    Node1* parent = temp->parent;
+    if (taken)
+        path.push_back(temp->itemId);
+    while (1)
+    {
+        if (temp->parent == 0 || temp == 0 )
+        {
+            //hit root or empty tree
+            break;
+        }
+        else
+        {
+            parent = temp->parent;
+        }
+        if (temp == parent->left)
+        {
+            path.push_back(temp->parent->itemId);
+        }
+        temp = temp->parent;
+    }
+    return path;
+}
+
+
+// Depth First Search of binary tree to search all items and determine
+// highest value collection of items given the pack Capacity and starting at root item
+// use explored hash table to trace back the items collected and find maximum value
+void
+DFSiterative(const vector<item>& items, Node1* root, const int& Capacity, 
+    std::unordered_map<Node1*, bool, NodePtrHash, NodePtrEqual> &explored)
+{
+    // node stack
+    stack<Node1*> sq;   
+    int level = 0;
+    int lowerBd = BestValueToGo(items, 0, Capacity, 0);
+    float upperBd = ContValueToGo(items, 0, Capacity, 0);
+    float bestToGo;           // Infeasible upper bound for value attainable at a node
+    int cumWei = 0, cumVal = 0, count = 0, remainCap = Capacity, one = 1;
+    Node1 dummy(0, 0, -1, 0, 0);
+    sq.push(root);
+    int skipped = 0;
+    Node1* temp = sq.top();
+    bool bottom = false;
+    Node1* rchild;
+    Node1* lchild;
+    while (!sq.empty())
+    {   // pop item from stack and store in node in temp, and set level
+        if (items.size() > level)
+        {
+            temp = sq.top();
+            sq.pop();
+            if (temp->parent != 0)
+                level = temp->level;
+            else
+                level = 0;
+        }
+        if (explored.find(temp) == explored.end() && level < items.size())  // temp not in explored
+        {   // Leave item out of packback - right child
+            if (temp->right == 0)   
+            {
+                cumVal = temp->cumVal;
+                cumWei = temp->cumWeight;
+                if (temp->parent != 0)  // not root node
+                {
+                    bestToGo = ContValueToGo(items, cumVal, Capacity - cumWei, temp->parent->level + 2);
+                }
+                else  // root node
+                    bestToGo = ContValueToGo(items, cumVal, Capacity - cumWei, 1);
+
+                if (bestToGo > lowerBd) // Check to see if this direction is worth exploring
+                {
+                    if (temp->parent != 0) {
+                        rchild = new Node1(cumWei, cumVal, items[level + 1].id, temp, temp->parent->level + 2);
+                    }
+                    else
+                        rchild = new Node1(cumWei, cumVal, items[level + 1].id, temp, 1);
+
+                    temp->right = rchild;
+                    if (rchild->level < items.size() - 1)
+                        sq.push(rchild);
+                    // Create right and left bottom leaves, don't push onto queue
+                    else
+                    {
+                        Node1* rleaf = new Node1(temp->cumWeight, temp->cumVal, items.size() + 10, temp, level);
+                        temp->right = rleaf;
+                        rleaf->right = &dummy;
+                        rleaf->left = &dummy;
+
+                        // tighten lower bound if possible
+                        if (lowerBd <= temp->cumVal + items[temp->itemId].value)
+                            lowerBd = temp->cumVal + items[temp->itemId].value;
+
+                        explored.insert({ rleaf,true });
+                        Node1* lleaf = new Node1(temp->cumWeight + items[temp->itemId].weight
+                            , temp->cumVal + items[temp->itemId].value
+                            , items.size() + 20, temp, level);
+                        if (Capacity - temp->cumWeight > items[temp->itemId].weight)
+                        {
+                            temp->left = lleaf;
+                            lleaf->right = &dummy;
+                            lleaf->left = &dummy;
+                            // tighten lower bound if possible to improve
+                            if (lowerBd <= temp->cumVal + items[temp->itemId].value)
+                                lowerBd = temp->cumVal + items[temp->itemId].value;
+                            explored.insert({ lleaf,true });
+                        }
+                        else
+                        {
+                            temp->left = &dummy;
+                            lleaf = &dummy;
+                            explored.insert({ lleaf,true });
+                        }
+                    }
+                }
+                else
+                {
+                    skipped++;
+                    temp->right = &dummy;
+                }
+            }
+            // consider putting item in packback - left child
+            if (temp->left == 0)   
+            {
+                cumVal = temp->cumVal;
+                cumWei = temp->cumWeight;
+                int remainingCap = Capacity - cumWei;
+                if (remainingCap >= items[level].weight)  // Check to see if enough capacity
+                {
+                    cumWei += items[level].weight;
+                    cumVal += items[level].value;
+                    remainCap = Capacity - cumWei;
+                    if (temp->parent != 0)                // Check best value to go if take item, not root
+                        bestToGo = ContValueToGo(items, cumVal, remainCap, temp->parent->level + 2);
+                    else
+                        bestToGo = ContValueToGo(items, cumVal, remainCap, 1);
+                    // Check to see if worth taking item, check max vs. lowerbd
+                    if (bestToGo >= lowerBd)  
+                    {
+                        if (temp->parent != 0)
+                            lchild = new Node1(cumWei, cumVal, items[level + 1].id, temp, temp->parent->level + 2);
+                        else
+                            lchild = new Node1(cumWei, cumVal, items[level + 1].id, temp, one);
+
+                        temp->left = lchild;
+                        if (lchild->level < items.size() - 1)
+                            sq.push(lchild);
+                        else  // create right and left bottom leaf and don't push on queue
+                        {
+                            Node1* rleaf = new Node1(temp->cumWeight, temp->cumVal, items.size() + 10, temp, level);
+                            temp->right = rleaf;
+                            rleaf->right = &dummy;
+                            rleaf->left = &dummy;
+
+                            // Uodate lower bound
+                            if (lowerBd <= temp->cumVal + items[temp->itemId].value)
+                                lowerBd = temp->cumVal + items[temp->itemId].value;
+                             
+                            explored.insert({ rleaf,true });
+                            Node1* lleaf = new Node1(temp->cumWeight + items[temp->itemId].weight
+                                , temp->cumVal + items[temp->itemId].value
+                                , items.size() + 20, temp, level);
+                            if (Capacity - temp->cumWeight > items[temp->itemId].weight)
+                            {
+                                temp->left = lleaf;
+                                lleaf->right = &dummy;
+                                lleaf->left = &dummy;
+                                // Update lower bound to improve
+                                if (lowerBd <= temp->cumVal + items[temp->itemId].value)
+                                    lowerBd = temp->cumVal + items[temp->itemId].value;
+                                explored.insert({ lleaf,true });
+                            }
+                            else
+                            {
+                                temp->left = &dummy;
+                                lleaf = &dummy;
+                                explored.insert({ lleaf,true });
+                            }
+                            level = 0;
+                        }
+                    }
+                    // skip item as not valuable enough
+                    else  
+                    {
+                        skipped++;
+                        temp->left = &dummy;
+                    }
+                }
+                else // not enough capacity make left child point to dummy node
+                    temp->left = &dummy;
+            }
+            if (temp->left != 0 && temp->right != 0)  // Node has right and left child addresses
+                 explored.insert({ temp,true });
+        }
+    }
+}
+
+int main()
+{
+    // input file with backpack data, first line is (number of items, pack Capacity)
+    // all other rows are an item (value, weight)
+    string inputfile = "c:\\Users\\geomc\\DiscreteOptimization_Python\\knapsack\\data\\ks_10000_0";
+    std::ifstream inputFile(inputfile);
+    // Check if the file is open successfully
+    if (!inputFile.is_open()) {
+        std::cerr << "Error opening the file." << '\n';
+        return 1;  // Return an error code
+    }
+    int itemValue, itemWeight;
+    int numbItems, packCap, count = 0;
+    
+    float valDensity;
+    // Grab the item numbers and pack Capacity from first line in file
+    inputFile >> numbItems >> packCap;
+    // Load items into an array and compute the value density and include
+    const int packCapacity = packCap;
+
+    vector<item> itemsPack, unsortedItemsPack;
+    while (inputFile >> itemValue >> itemWeight)
+    {   // Include items which don't exceed pack Capacity
+        if (itemWeight < packCapacity)
+        {
+            valDensity = (float)itemValue / (float)itemWeight;
+            itemsPack.push_back({ count, itemValue, itemWeight, valDensity });
+            count++;
+        } 
+    }
+
+    unsortedItemsPack = itemsPack;   // Create copy to preserve unsorted order
+    // Close file, end of data loading
+    inputFile.close();
+
+    // start search
+    auto start_time = std::chrono::high_resolution_clock::now(); // start time
+
+    // sort value density in descending order - key to optimize search
+    sort(itemsPack.begin(), itemsPack.end(), sortValDensity);
+
+    vector<int> grabbed1;       // items collected and put into packback
+
+    int cumValue = 0, level = 0;   // cum value, level is item index in sorted list
+
+    vector<tuple<int, Node1*, bool, int, int>> outBFS;   // Used in BFS search
+    // Upper bound calculation assuming items are continuous quantities
+    float upperBd = ContValueToGo(itemsPack, cumValue, packCapacity, level =0);
+    // First item in back pack, cumValue, cumWeight, ... , level, and parent are zero
+    Node1* root = new Node1(0, 0, itemsPack[0].id, 0,0);
+ 
+    // hash table to keep track of explored nodes in DFS search
+    std::unordered_map<Node1*, bool, NodePtrHash, NodePtrEqual> explored;
+    // Depth First Search through items in binary tree, update explored 
+    DFSiterative(itemsPack, root, packCapacity, explored);
+    // find maximum and backtrack to get all items using explored
+    int maxVal = 0;
+    int maxId = -1;
+    Node1 *maxPar, *maxLf;
+    maxPar = 0;             // parent of maximum valued bottom leaf
+    maxLf = 0;              // address of maximum valued bottom leaf
+    bool leftCh = false;
+    for (auto x : explored)
+    {
+        if (x.first->cumVal >= maxVal)
+        {
+            maxVal = x.first->cumVal;
+            maxPar = x.first ->parent;
+            maxLf = x.first;
+        }
+    }
+    // determine where the maximum bottom leaf is - right or left child
+    // if left child then will be included in solution
+    if (maxPar->left == maxLf)
+        leftCh = true;
+    
+    std::cout << maxVal << " bool : true taken " << (bool)leftCh 
+        <<  " max weight "  << '\n';
+    std::cout << upperBd << " upper bd "<< '\n';
+    // backtrack given the grabbed items
+    grabbed1 = backTrack(maxPar,leftCh);
+    int sumCheck = 0;
+    int weiCheck = 0;
+    // print out items grabbed and perform a sum check on value and weight
+    for (auto x : grabbed1)
+    {   
+        std::cout << x << '\n';
+        sumCheck += unsortedItemsPack[x].value;
+        weiCheck += unsortedItemsPack[x].weight;
+    }
+    std::cout << sumCheck << " sum check " << weiCheck 
+        << " weight check " <<  '\n';
+ 
+    auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed_seconds = end_time - start_time;
+    // Print the elapsed time in seconds and check result with max == Summ
+     std::cout << "Elapsed time: " << elapsed_seconds.count() << " seconds." << std::endl;
+    return 0;
+}
+
